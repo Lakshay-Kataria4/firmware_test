@@ -1,1 +1,134 @@
-ssh
+/*
+  bootstrap_fota.cpp
+  -------------------
+  This is the firmware you flash DIRECTLY onto the PCB over USB (one time).
+  It brings up the PPP data link through the EC200U-CN, then every 30
+  minutes checks GitHub for a newer firmware.bin (the blink_app.cpp payload)
+  and flashes it via FOTA if a new version is found.
+
+  Modem pins (as confirmed by you):
+    TX_PIN  = 5
+    RX_PIN  = 4
+    PWR_PIN = 32
+*/
+
+#include <Arduino.h>
+#include <PPP.h>
+#include <HTTPUpdate.h>
+#include <WiFiClientSecure.h>
+
+// ---- Modem UART/control pins ----
+#define MODEM_TX_PIN   5
+#define MODEM_RX_PIN   4
+#define MODEM_PWR_PIN  32
+
+// ---- Your SIM's carrier APN ----
+const char *APN = "airtelgprs.com";   // change if your SIM uses a different carrier
+
+// ---- Firmware file to pull via FOTA ----
+// Point this at the raw GitHub URL of the compiled blink_app firmware.bin
+const char *OTA_URL = "https://raw.githubusercontent.com/YOUR_USER/YOUR_REPO/main/firmware.bin";
+
+// ---- Periodic check interval ----
+#define OTA_CHECK_INTERVAL_MS (30UL * 60UL * 1000UL)  // every 30 minutes
+
+bool pppConnected = false;
+unsigned long lastOtaCheck = 0;
+
+void onNetworkEvent(arduino_event_id_t event, arduino_event_info_t info) {
+  switch (event) {
+    case ARDUINO_EVENT_PPP_START:        Serial.println("PPP Started"); break;
+    case ARDUINO_EVENT_PPP_CONNECTED:    Serial.println("PPP Connected"); break;
+    case ARDUINO_EVENT_PPP_GOT_IP:
+      Serial.print("PPP Got IP: ");
+      Serial.println(PPP.localIP());
+      pppConnected = true;
+      break;
+    case ARDUINO_EVENT_PPP_LOST_IP:      Serial.println("PPP Lost IP"); pppConnected = false; break;
+    case ARDUINO_EVENT_PPP_DISCONNECTED: Serial.println("PPP Disconnected"); pppConnected = false; break;
+    default: break;
+  }
+}
+
+void powerOnModem() {
+  pinMode(MODEM_PWR_PIN, OUTPUT);
+  digitalWrite(MODEM_PWR_PIN, LOW);
+  delay(2000);
+  digitalWrite(MODEM_PWR_PIN, HIGH);
+  delay(3000);
+}
+
+bool startPpp() {
+  PPP.setPins(MODEM_TX_PIN, MODEM_RX_PIN, -1, -1, ESP_MODEM_FLOW_CONTROL_NONE);
+
+  Serial.println("Starting PPP (generic mode for EC200U)...");
+  if (!PPP.begin(PPP_MODEM_GENERIC, 1, 115200)) {
+    Serial.println("PPP.begin() failed -- check wiring/power to modem.");
+    return false;
+  }
+  PPP.setApn(APN);
+
+  Serial.println("Waiting for IP address...");
+  unsigned long start = millis();
+  while (!PPP.hasIP() && (millis() - start) < 60000) {
+    delay(500);
+    Serial.print(".");
+  }
+
+  if (!PPP.hasIP()) {
+    Serial.println("\nFailed to get IP -- check APN, SIM, signal strength.");
+    return false;
+  }
+
+  Serial.println("\nPPP link up.");
+  return true;
+}
+
+void runOTAUpdate() {
+  WiFiClientSecure client;
+  client.setInsecure();   // use a real CA cert for production
+
+  Serial.println("Checking for firmware update...");
+  httpUpdate.rebootOnUpdate(true);
+
+  t_httpUpdate_return result = httpUpdate.update(client, OTA_URL);
+
+  switch (result) {
+    case HTTP_UPDATE_FAILED:
+      Serial.printf("OTA failed: (%d) %s\n", httpUpdate.getLastError(), httpUpdate.getLastErrorString().c_str());
+      break;
+    case HTTP_UPDATE_NO_UPDATES:
+      Serial.println("No update available.");
+      break;
+    case HTTP_UPDATE_OK:
+      Serial.println("OTA successful -- rebooting.");
+      break;
+  }
+}
+
+void setup() {
+  Serial.begin(115200);
+  delay(1000);
+
+  Network.onEvent(onNetworkEvent);
+  powerOnModem();
+  startPpp();
+
+  lastOtaCheck = millis() - OTA_CHECK_INTERVAL_MS; // force a check shortly after boot
+}
+
+void loop() {
+  unsigned long now = millis();
+
+  if (!pppConnected) {
+    // try to bring the link back up if it dropped
+    startPpp();
+    delay(2000);
+    return;
+  }
+
+  if (now - lastOtaCheck >= OTA_CHECK_INTERVAL_MS) {
+    lastOtaCheck = now;
+    runOTAUpdate();
+  }
+}
