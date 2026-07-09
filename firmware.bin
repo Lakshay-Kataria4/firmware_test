@@ -27,7 +27,7 @@ const char *APN = "airtelgprs.com";   // change if your SIM uses a different car
 
 // ---- Firmware file to pull via FOTA ----
 // Point this at the raw GitHub URL of the compiled blink_app firmware.bin
-const char *OTA_URL = "https://raw.githubusercontent.com/YOUR_USER/YOUR_REPO/main/firmware.bin";
+const char *OTA_URL = "https://raw.githubusercontent.com/Lakshay-Kataria4/firmware_test/refs/heads/main/firmware.bin";
 
 // ---- Periodic check interval ----
 #define OTA_CHECK_INTERVAL_MS (30UL * 60UL * 1000UL)  // every 30 minutes
